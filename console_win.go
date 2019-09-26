@@ -40,6 +40,7 @@ type cScreen struct {
 	clear      bool
 	fini       bool
 	vten       bool
+	truecolor  bool
 
 	w int
 	h int
@@ -162,6 +163,24 @@ func (s *cScreen) Init() error {
 	}
 	s.out = out
 
+	s.truecolor = true
+
+	// ConEmu handling of colors and scrolling when in terminal
+	// mode is extremely problematic at the best.  The color
+	// palette will scroll even though characters do not, when
+	// emiting stuff for the last character.  In the future we
+	// might change this to look at specific versions of ConEmu
+	// if they fix the bug.
+	if os.Getenv("ConEmuPID") != "" {
+		s.truecolor = false
+	}
+	switch os.Getenv("TCELL_TRUECOLOR") {
+	case "disable":
+		s.truecolor = false
+	case "enable":
+		s.truecolor = true
+	}
+
 	cf, _, e := procCreateEvent.Call(
 		uintptr(0),
 		uintptr(1),
@@ -188,17 +207,18 @@ func (s *cScreen) Init() error {
 
 	// 24-bit color is opt-in for now, because we can't figure out
 	// to make it work consistently.
-	if os.Getenv("TCELL_TRUECOLOR") == "enable" {
-		s.setOutMode(modeVtOutput | modeNoAutoNL)
+	if s.truecolor {
+		s.setOutMode(modeVtOutput | modeNoAutoNL | modeCookedOut)
 		var omode uint32
 		s.getOutMode(&omode)
 		if omode&modeVtOutput == modeVtOutput {
 			s.vten = true
+		} else {
+			s.truecolor = false
 		}
 	} else {
 		s.setOutMode(0)
 	}
-	s.setOutMode(modeCooked)
 
 	s.clearScreen(s.style)
 	s.hideCursor()
@@ -926,8 +946,8 @@ func (s *cScreen) setCursorInfo(info *cursorInfo) {
 
 func (s *cScreen) setCursorPos(x, y int) {
 	if s.vten {
-		// Note that the string is Y first.
-		s.emitVtString(fmt.Sprintf(vtCursorPos, y, x))
+		// Note that the string is Y first.  Origin is 1,1.
+		s.emitVtString(fmt.Sprintf(vtCursorPos, y+1, x+1))
 	} else {
 		procSetConsoleCursorPosition.Call(
 			uintptr(s.out),
@@ -1028,9 +1048,10 @@ const (
 	modeVtInput         = 0x0200
 
 	// Output modes
-	modeWrapEOL  uint32 = 0x0002
-	modeVtOutput        = 0x0004
-	modeNoAutoNL        = 0x0008
+	modeCookedOut uint32 = 0x0001
+	modeWrapEOL          = 0x0002
+	modeVtOutput         = 0x0004
+	modeNoAutoNL         = 0x0008
 )
 
 func (s *cScreen) setInMode(mode uint32) error {
